@@ -1,9 +1,9 @@
-use winky::{button_press, button_release, mouse_move, press, release, Button, Key};
+use winky::{self, Button, Key};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel, UnboundedReceiver};
 use std::{collections::HashSet};
 
 static TAP_WAIT: u64 = 50;
-static MAX_INDIVIDUAL_WAIT: u64 = 10000;
+//static MAX_INDIVIDUAL_WAIT: u64 = 10000;
 
 #[derive(Copy, Clone, Debug)]
 #[allow(unused)]
@@ -23,25 +23,25 @@ pub enum Cmd {
 }
 
 pub struct MacronInterface {
-    tx: UnboundedSender<MacronControl>,
+    tx: UnboundedSender<Control>,
 }
 
 #[allow(unused)]
 impl MacronInterface {
     pub fn start(&self) {
-        let _ = self.tx.send(MacronControl::Start);
+        let _ = self.tx.send(Control::Start);
     }
     pub fn stop(&self) {
-        let _ = self.tx.send(MacronControl::Stop);
+        let _ = self.tx.send(Control::Stop);
     }
     pub fn toggle(&self) {
-        let _ = self.tx.send(MacronControl::Toggle);
+        let _ = self.tx.send(Control::Toggle);
     }
 }
 
 #[derive(PartialEq)]
 #[allow(unused)]
-pub enum MacronControl {
+pub enum Control {
     Start,
     Stop,
     Toggle,
@@ -72,6 +72,7 @@ fn flatten(cmd_list: &Vec<Cmd>) -> Vec<Cmd> {
                 cmds.push(Cmd::Wait(*ms));
                 cmds.push(Cmd::MouseRelease(*button));
             }
+            /*/
             Cmd::Wait(ms) => {
                 // Break into smaller waits
                 if *ms > MAX_INDIVIDUAL_WAIT {
@@ -86,6 +87,7 @@ fn flatten(cmd_list: &Vec<Cmd>) -> Vec<Cmd> {
                     cmds.push(Cmd::Wait(*ms));
                 }
             }
+            */
             _ => {
                 let _ = cmds.push(*cmd);
             }
@@ -96,14 +98,14 @@ fn flatten(cmd_list: &Vec<Cmd>) -> Vec<Cmd> {
 
 struct Macron {
     cmds : Vec<Cmd>,
-    control_rx : UnboundedReceiver<MacronControl>,
+    control_rx : UnboundedReceiver<Control>,
     cycle : bool,
     keys_down: HashSet<Key>,
     buttons_down: HashSet<Button>,
 }
 
 impl Macron {
-    pub fn new(cmd_list: Vec<Cmd>, cycle: bool, control_rx: UnboundedReceiver<MacronControl>) -> Self {
+    pub fn new(cmd_list: Vec<Cmd>, cycle: bool, control_rx: UnboundedReceiver<Control>) -> Self {
         let cmds = flatten(&cmd_list);
         Macron {
             cmds,
@@ -132,35 +134,39 @@ impl Macron {
     }
 
     fn press(&mut self, key: Key) {
-        let _ = press(key);
+        let _ = winky::press(key);
         self.keys_down.insert(key);
     }
 
     fn release(&mut self, key: Key) {
-        let _ = release(key);
+        let _ = winky::release(key);
         self.keys_down.remove(&key);
     }
 
+    fn mouse_move(&self, x: i32, y: i32) {
+        winky::mouse_move(x, y);
+    }
+
     fn mouse_press(&mut self, button: Button) {
-        let _ = button_press(button);
+        let _ = winky::button_press(button);
         self.buttons_down.insert(button);
     }
 
     fn mouse_release(&mut self, button: Button) {
-        let _ = button_release(button);
+        let _ = winky::button_release(button);
         self.buttons_down.remove(&button);
     }
 
-    async fn wait(&mut self, time: u64) -> Option<MacronControl> {
+    /// Sleeps for 'time', but if interrupted by a stop message, returns
+    /// that message
+    async fn wait(&mut self, time: u64) -> Option<Control> {
         let sleep = tokio::time::sleep(std::time::Duration::from_millis(time));
         tokio::pin!(sleep);
         loop {
             tokio::select! {
                 Some(msg) = self.control_rx.recv() => {
                     match msg {
-                        MacronControl::Stop | MacronControl::Toggle => {
-                            return Some(msg);
-                        },
+                        Control::Stop | Control::Toggle => return Some(msg),
                         _ => {}
                     }
                 },
@@ -170,50 +176,42 @@ impl Macron {
     }
 
     async fn run(&mut self) {
-        let mut index = 0;
         if self.cmds.len() == 0 { return; }
-        
+
+        let mut index = 0;
         loop {
             match self.control_rx.try_recv() {
-                Ok(MacronControl::Stop) | Ok(MacronControl::Toggle) => {
-                    self.stop();
-                    return;
-                },
+                Ok(Control::Stop) | Ok(Control::Toggle) => break,
                 _ => {}
             }
             match self.cmds.get(index).unwrap().clone() {
                 Cmd::Press(key) => self.press(key),
                 Cmd::Release(key) => self.release(key),
-                Cmd::MouseMove(x, y) => mouse_move(x, y),
+                Cmd::MouseMove(x, y) => self.mouse_move(x, y),
                 Cmd::MousePress(button) => self.mouse_press(button),
                 Cmd::MouseRelease(button) => self.mouse_release(button),
                 Cmd::Wait(time) => {
-                    if let Some(msg) = self.wait(time).await {
-                        if msg == MacronControl::Stop || msg == MacronControl::Toggle {
-                            self.stop();
-                            return;
-                        }
+                    match self.wait(time).await {
+                        Some(Control::Stop) | Some(Control::Toggle) => break,
+                        _ => {}
                     }
                 },
                 _ => panic!("unexpected command")
             }
-            index = index + 1;
-            if index >= self.cmds.len() {
-                if self.cycle { 
-                    index = 0;
-                } else {
-                    self.stop();
-                    return;
-                }
+            if index == self.cmds.len() - 1 && !self.cycle {
+                break;
             }
+            index = (index + 1) % self.cmds.len();
         }
+
+        self.stop();
     }
 
     pub async fn start(&mut self) {
         loop {
             let msg = self.control_rx.recv().await;
             match msg {
-                Some(MacronControl::Start) | Some(MacronControl::Toggle) => self.run().await,
+                Some(Control::Start) | Some(Control::Toggle) => self.run().await,
                 _ => { }
             }
         }
