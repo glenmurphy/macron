@@ -1,9 +1,9 @@
 use winky::{button_press, button_release, mouse_move, press, release, Button, Key};
-use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
-use std::collections::HashSet;
-use tokio_stream::{self as stream, StreamExt};
+use tokio::sync::mpsc::{UnboundedSender, unbounded_channel, UnboundedReceiver};
+use std::{collections::HashSet};
 
 static TAP_WAIT: u64 = 50;
+static MAX_INDIVIDUAL_WAIT: u64 = 10000;
 
 #[derive(Copy, Clone, Debug)]
 #[allow(unused)]
@@ -39,6 +39,7 @@ impl MacronInterface {
     }
 }
 
+#[derive(PartialEq)]
 #[allow(unused)]
 pub enum MacronControl {
     Start,
@@ -71,6 +72,20 @@ fn flatten(cmd_list: &Vec<Cmd>) -> Vec<Cmd> {
                 cmds.push(Cmd::Wait(*ms));
                 cmds.push(Cmd::MouseRelease(*button));
             }
+            Cmd::Wait(ms) => {
+                // Break into smaller waits
+                if *ms > MAX_INDIVIDUAL_WAIT {
+                    let mut ms = *ms;
+                    while ms > MAX_INDIVIDUAL_WAIT {
+                        cmds.push(Cmd::Wait(MAX_INDIVIDUAL_WAIT));
+                        ms -= MAX_INDIVIDUAL_WAIT;
+                    }
+                    cmds.push(Cmd::Wait(ms));
+                }
+                else {
+                    cmds.push(Cmd::Wait(*ms));
+                }
+            }
             _ => {
                 let _ = cmds.push(*cmd);
             }
@@ -79,95 +94,136 @@ fn flatten(cmd_list: &Vec<Cmd>) -> Vec<Cmd> {
     cmds
 }
 
+struct Macron {
+    cmds : Vec<Cmd>,
+    control_rx : UnboundedReceiver<MacronControl>,
+    cycle : bool,
+    keys_down: HashSet<Key>,
+    buttons_down: HashSet<Button>,
+}
 
-pub async fn new(cmd_list: Vec<Cmd>, cycle: bool) -> MacronInterface {
-    let (control_tx, mut control_rx) = unbounded_channel();
-    let cmds = flatten(&cmd_list);
+impl Macron {
+    pub fn new(cmd_list: Vec<Cmd>, cycle: bool, control_rx: UnboundedReceiver<MacronControl>) -> Self {
+        let cmds = flatten(&cmd_list);
+        Macron {
+            cmds,
+            control_rx,
+            cycle,
+            keys_down : HashSet::new(),
+            buttons_down : HashSet::new(),
+        }
+    }
 
-    tokio::spawn(async move {
-        let mut run_cmds_stream = stream::iter(&cmds);
-        let mut running = false;
-        let mut keys_down: HashSet<Key> = HashSet::new();
-        let mut buttons_down: HashSet<Button> = HashSet::new();
+    fn clear_keys(&mut self) {
+        while let Some(&key) = self.keys_down.iter().next() {
+            self.release(key);
+        }
+    }
 
+    fn clear_buttons(&mut self) {
+        while let Some(&button) = self.buttons_down.iter().next() {
+            self.mouse_release(button);
+        }
+    }
+
+    fn stop(&mut self) {
+        self.clear_keys();
+        self.clear_buttons();
+    }
+
+    fn press(&mut self, key: Key) {
+        let _ = press(key);
+        self.keys_down.insert(key);
+    }
+
+    fn release(&mut self, key: Key) {
+        let _ = release(key);
+        self.keys_down.remove(&key);
+    }
+
+    fn mouse_press(&mut self, button: Button) {
+        let _ = button_press(button);
+        self.buttons_down.insert(button);
+    }
+
+    fn mouse_release(&mut self, button: Button) {
+        let _ = button_release(button);
+        self.buttons_down.remove(&button);
+    }
+
+    async fn wait(&mut self, time: u64) -> Option<MacronControl> {
+        let sleep = tokio::time::sleep(std::time::Duration::from_millis(time));
+        tokio::pin!(sleep);
         loop {
             tokio::select! {
-                Some(msg) = control_rx.recv() => {
+                Some(msg) = self.control_rx.recv() => {
                     match msg {
-                        MacronControl::Start => {
-                            println!("starting");
-                            running = true;
-                            run_cmds_stream = stream::iter(&cmds);
+                        MacronControl::Stop | MacronControl::Toggle => {
+                            return Some(msg);
                         },
-                        MacronControl::Stop => {
-                            println!("stopping");
-                            running = false;
+                        _ => {}
+                    }
+                },
+                () = &mut sleep => { return None }
+            }
+        }
+    }
 
-                            for key in keys_down.iter() { release(*key); }
-                            for button in buttons_down.iter() { button_release(*button); }
-                            keys_down.clear();
-                            buttons_down.clear();
-                        },
-                        MacronControl::Toggle => {
-                            println!("toggling");
-                            if running {
-                                println!("stopping");
-                                running = false;
-
-                                for key in keys_down.iter() { release(*key); }
-                                for button in buttons_down.iter() { button_release(*button); }
-                                keys_down.clear();
-                                buttons_down.clear();
-                            } else {
-                                println!("starting");
-                                running = true;
-                                run_cmds_stream = stream::iter(&cmds);
-                            }
+    async fn run(&mut self) {
+        let mut index = 0;
+        if self.cmds.len() == 0 { return; }
+        
+        loop {
+            match self.control_rx.try_recv() {
+                Ok(MacronControl::Stop) | Ok(MacronControl::Toggle) => {
+                    self.stop();
+                    return;
+                },
+                _ => {}
+            }
+            match self.cmds.get(index).unwrap().clone() {
+                Cmd::Press(key) => self.press(key),
+                Cmd::Release(key) => self.release(key),
+                Cmd::MouseMove(x, y) => mouse_move(x, y),
+                Cmd::MousePress(button) => self.mouse_press(button),
+                Cmd::MouseRelease(button) => self.mouse_release(button),
+                Cmd::Wait(time) => {
+                    if let Some(msg) = self.wait(time).await {
+                        if msg == MacronControl::Stop || msg == MacronControl::Toggle {
+                            self.stop();
+                            return;
                         }
                     }
-                }
-                maybe_c = run_cmds_stream.next(), if running => {
-                    if let Some(c) = maybe_c {
-                        //println!("running cmd: {:?}", &c);
-                        match c {
-                            Cmd::Press(key) => {
-                                press(*key);
-                                keys_down.insert(*key);
-                            }
-                            Cmd::Release(key) => {
-                                release(*key);
-                                keys_down.remove(&key);
-                            }
-                            Cmd::MouseMove(x, y) => {
-                                mouse_move(*x, *y);
-                            }
-                            Cmd::MousePress(button) => {
-                                button_press(*button);
-                                buttons_down.insert(*button);
-                            }
-                            Cmd::MouseRelease(button) => {
-                                button_release(*button);
-                                buttons_down.remove(&button);
-                            }
-                            Cmd::Wait(time) => {
-                                // ideally we would pause the stream and use a timer
-                                // so the channels can continue working
-                                std::thread::sleep(std::time::Duration::from_millis(*time));
-                            },
-                            _ => {
-                                panic!("unexpected command: {:?}", c);
-                            }
-                        }
-                    } else if cycle {
-                        // Run out of commands, loop
-                        run_cmds_stream = stream::iter(&cmds);
-                    }
+                },
+                _ => panic!("unexpected command")
+            }
+            index = index + 1;
+            if index >= self.cmds.len() {
+                if self.cycle { 
+                    index = 0;
+                } else {
+                    self.stop();
+                    return;
                 }
             }
         }
-    });
-
-    MacronInterface {
-        tx : control_tx
     }
+
+    pub async fn start(&mut self) {
+        loop {
+            let msg = self.control_rx.recv().await;
+            match msg {
+                Some(MacronControl::Start) | Some(MacronControl::Toggle) => self.run().await,
+                _ => { }
+            }
+        }
+    }
+}
+
+pub async fn new(cmds: Vec<Cmd>, cycle: bool) -> MacronInterface {
+    let (control_tx, control_rx) = unbounded_channel();
+    tokio::spawn(async move {
+        Macron::new(cmds, cycle, control_rx).start().await;
+    });
+    MacronInterface { tx: control_tx }
 }
