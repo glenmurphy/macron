@@ -86,18 +86,12 @@ async fn main() {
 
     let mut key_rx = winky::listen();
     loop {
-        tokio::select! {
-            Some((code, down)) = key_rx.recv() => {
-                if code == Key::F9 as u32 && down {
-                    let _ = afk1.toggle();
-                }
-                else if code == Key::F10 as u32 && down {
-                    let _ = afk2.toggle();
-                }
-                else if code == Key::F11 as u32 && down {
-                    let _ = afk3.toggle();
-                }
-            }
+        let (code, down) = key_rx.recv().await.unwrap();
+        match code {
+            Key::F9 if down => afk1.toggle(),
+            Key::F10 if down => afk2.toggle(),
+            Key::F11 if down => afk3.toggle(),
+            _ => {}
         }
     }
 }
