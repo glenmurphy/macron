@@ -96,7 +96,7 @@ fn flatten(cmd_list: &Vec<Cmd>) -> Vec<Cmd> {
     cmds
 }
 
-struct Macron {
+struct MacronRunner {
     cmds : Vec<Cmd>,
     control_rx : UnboundedReceiver<Control>,
     cycle : bool,
@@ -104,10 +104,10 @@ struct Macron {
     buttons_down: HashSet<Button>,
 }
 
-impl Macron {
+impl MacronRunner {
     pub fn new(cmd_list: Vec<Cmd>, cycle: bool, control_rx: UnboundedReceiver<Control>) -> Self {
         let cmds = flatten(&cmd_list);
-        Macron {
+        MacronRunner {
             cmds,
             control_rx,
             cycle,
@@ -158,7 +158,7 @@ impl Macron {
     }
 
     /// Sleeps for 'time', but if interrupted by a stop message, returns
-    /// that message
+    /// that message. Used inside the run loop.
     async fn wait(&mut self, time: u64) -> Option<Control> {
         let sleep = tokio::time::sleep(std::time::Duration::from_millis(time));
         tokio::pin!(sleep);
@@ -179,6 +179,7 @@ impl Macron {
         if self.cmds.len() == 0 { return; }
 
         let mut index = 0;
+        println!("Starting");
         loop {
             match self.control_rx.try_recv() {
                 Ok(Control::Stop) | Ok(Control::Toggle) => break,
@@ -204,6 +205,7 @@ impl Macron {
             index = (index + 1) % self.cmds.len();
         }
 
+        println!("Stopped");
         self.stop();
     }
 
@@ -221,7 +223,7 @@ impl Macron {
 pub async fn new(cmds: Vec<Cmd>, cycle: bool) -> MacronInterface {
     let (control_tx, control_rx) = unbounded_channel();
     tokio::spawn(async move {
-        Macron::new(cmds, cycle, control_rx).start().await;
+        MacronRunner::new(cmds, cycle, control_rx).start().await;
     });
     MacronInterface { tx: control_tx }
 }
