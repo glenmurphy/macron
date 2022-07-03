@@ -3,7 +3,6 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel, UnboundedReceiver};
 use std::{collections::HashSet};
 
 static TAP_WAIT: u64 = 50;
-//static MAX_INDIVIDUAL_WAIT: u64 = 10000;
 
 #[derive(Copy, Clone, Debug)]
 #[allow(unused)]
@@ -22,26 +21,9 @@ pub enum Cmd {
     MouseHold(Button, u64),
 }
 
-pub struct MacronInterface {
-    tx: UnboundedSender<Control>,
-}
-
-#[allow(unused)]
-impl MacronInterface {
-    pub fn start(&self) {
-        let _ = self.tx.send(Control::Start);
-    }
-    pub fn stop(&self) {
-        let _ = self.tx.send(Control::Stop);
-    }
-    pub fn toggle(&self) {
-        let _ = self.tx.send(Control::Toggle);
-    }
-}
-
 #[derive(PartialEq)]
 #[allow(unused)]
-pub enum Control {
+enum Control {
     Start,
     Stop,
     Toggle,
@@ -72,22 +54,6 @@ fn flatten(cmd_list: &Vec<Cmd>) -> Vec<Cmd> {
                 cmds.push(Cmd::Wait(*ms));
                 cmds.push(Cmd::MouseRelease(*button));
             }
-            /*/
-            Cmd::Wait(ms) => {
-                // Break into smaller waits
-                if *ms > MAX_INDIVIDUAL_WAIT {
-                    let mut ms = *ms;
-                    while ms > MAX_INDIVIDUAL_WAIT {
-                        cmds.push(Cmd::Wait(MAX_INDIVIDUAL_WAIT));
-                        ms -= MAX_INDIVIDUAL_WAIT;
-                    }
-                    cmds.push(Cmd::Wait(ms));
-                }
-                else {
-                    cmds.push(Cmd::Wait(*ms));
-                }
-            }
-            */
             _ => {
                 let _ = cmds.push(*cmd);
             }
@@ -116,21 +82,13 @@ impl MacronRunner {
         }
     }
 
-    fn clear_keys(&mut self) {
+    fn release_all(&mut self) {
         while let Some(&key) = self.keys_down.iter().next() {
             self.release(key);
         }
-    }
-
-    fn clear_buttons(&mut self) {
         while let Some(&button) = self.buttons_down.iter().next() {
             self.mouse_release(button);
         }
-    }
-
-    fn stop(&mut self) {
-        self.clear_keys();
-        self.clear_buttons();
     }
 
     fn press(&mut self, key: Key) {
@@ -157,20 +115,16 @@ impl MacronRunner {
         self.buttons_down.remove(&button);
     }
 
-    /// Sleeps for 'time', but if interrupted by a stop message, returns
+    /// Sleeps for 'time', but if interrupted by a message, returns
     /// that message. Used inside the run loop.
     async fn wait(&mut self, time: u64) -> Option<Control> {
         let sleep = tokio::time::sleep(std::time::Duration::from_millis(time));
         tokio::pin!(sleep);
+
         loop {
             tokio::select! {
-                Some(msg) = self.control_rx.recv() => {
-                    match msg {
-                        Control::Stop | Control::Toggle => return Some(msg),
-                        _ => {}
-                    }
-                },
-                () = &mut sleep => { return None }
+                msg = self.control_rx.recv() => return msg,
+                () = &mut sleep => return None,
             }
         }
     }
@@ -185,6 +139,7 @@ impl MacronRunner {
                 Ok(Control::Stop) | Ok(Control::Toggle) => break,
                 _ => {}
             }
+
             match self.cmds.get(index).unwrap().clone() {
                 Cmd::Press(key) => self.press(key),
                 Cmd::Release(key) => self.release(key),
@@ -194,19 +149,28 @@ impl MacronRunner {
                 Cmd::Wait(time) => {
                     match self.wait(time).await {
                         Some(Control::Stop) | Some(Control::Toggle) => break,
+                        Some(Control::Start) => {
+                            // Release any keys and restart the loop
+                            // If the loop gets more complicated, it could be 
+                            // cleaner to nest a call to run(), then break
+                            self.release_all();
+                            index = 0;
+                            continue;
+                        },
                         _ => {}
                     }
                 },
                 _ => panic!("unexpected command")
             }
+
             if index == self.cmds.len() - 1 && !self.cycle {
                 break;
             }
             index = (index + 1) % self.cmds.len();
         }
 
+        self.release_all();
         println!("Stopped");
-        self.stop();
     }
 
     pub async fn start(&mut self) {
@@ -220,10 +184,27 @@ impl MacronRunner {
     }
 }
 
-pub async fn new(cmds: Vec<Cmd>, cycle: bool) -> MacronInterface {
-    let (control_tx, control_rx) = unbounded_channel();
-    tokio::spawn(async move {
-        MacronRunner::new(cmds, cycle, control_rx).start().await;
-    });
-    MacronInterface { tx: control_tx }
+pub struct Macron {
+    tx: UnboundedSender<Control>,
+}
+
+#[allow(unused)]
+impl Macron {
+    pub fn new(cmds: Vec<Cmd>, cycle: bool) -> Macron {
+        let (control_tx, control_rx) = unbounded_channel();
+        tokio::spawn(async move {
+            MacronRunner::new(cmds, cycle, control_rx).start().await;
+        });
+        Macron { tx: control_tx }
+    }
+
+    pub fn start(&self) {
+        let _ = self.tx.send(Control::Start);
+    }
+    pub fn stop(&self) {
+        let _ = self.tx.send(Control::Stop);
+    }
+    pub fn toggle(&self) {
+        let _ = self.tx.send(Control::Toggle);
+    }
 }

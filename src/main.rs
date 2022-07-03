@@ -1,13 +1,16 @@
 mod macron;
 
 use winky::{Key, Button};
-use macron::Cmd::{*};
+use macron::{
+    Macron,
+    Cmd::{*}
+};
 
 #[tokio::main]
 async fn main() {
     println!("Macro tool awaiting input");
 
-    let afk1 = macron::new(vec![
+    let afk1 = Macron::new(vec![
         MouseMove(0, 24000), Wait(50),
         MouseMove(0, -17100), Wait(50),
 
@@ -36,9 +39,9 @@ async fn main() {
         Tap(Key::R),
         Tap(Key::W), Wait(100),
         Hold(Key::S, 450), Wait(1400),
-    ], true).await;
+    ], true);
 
-    let afk2 = macron::new(vec![
+    let afk2 = Macron::new(vec![
         MouseMove(0, 24000), Wait(50),
         MouseMove(0, -15000), Wait(50),
 
@@ -56,9 +59,9 @@ async fn main() {
         Tap(Key::R), Wait(1500),
         Tap(Key::W), Wait(100),
         Hold(Key::S, 700),   // Back
-    ], true).await;
+    ], true);
 
-    let afk3 = macron::new(vec![
+    let afk3 = Macron::new(vec![
         MouseMove(0, 24000), Wait(50),
         MouseMove(0, -14500), Wait(50),
 
@@ -82,7 +85,7 @@ async fn main() {
         // walk
         Tap(Key::W), Wait(100),
         Hold(Key::S, 400), Wait(200),
-    ], true).await;
+    ], true);
 
     let mut key_rx = winky::listen();
     loop {
