@@ -1,5 +1,3 @@
-mod macron;
-
 use winky::{Key, Button};
 use macron::{
     Macron,
