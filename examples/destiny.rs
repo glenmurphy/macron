@@ -1,4 +1,4 @@
-use winky::{Key, Button};
+use winky::{Event, Key, Button};
 use macron::{
     Macron,
     Cmd::{*}
@@ -48,41 +48,33 @@ async fn main() {
 
     // Burst SMG
     let afk2 = Macron::new(vec![
+        Press(Key::Control),
         MouseMove(0, 24000), Wait(50),
-        MouseMove(0, -17200), Wait(50),
+        MouseMove(0, -14000), Wait(50),
 
         Tap(Key::K),
         Wait(350),
 
         //MouseMove(0, 200), Wait(50),
         // 1
-        Tap(Key::Num1),
-        Wait(900),
-        MouseHold(Button::Left, 600),
+        Tap(Key::Num1), Wait(1200),
+        MouseClick(Button::Left), Wait(300),
+        MouseClick(Button::Left), Wait(300),
+        MouseClick(Button::Left), Wait(300),
+        MouseClick(Button::Left), Wait(300),
+        MouseClick(Button::Left), Wait(300),
 
-        MouseMove(-750, -200), Wait(50),
-        MouseHold(Button::Left, 700),
-
-        MouseMove(-750, -200), Wait(50),
-        MouseHold(Button::Left, 600),
-
-        MouseMove(2500, 0), Wait(50),
-        MouseHold(Button::Left, 600),
-
-        MouseMove(-1000, 0), Wait(50),
-
-        // walk
-        /*
-        Tap(Key::R),
-        Tap(Key::W), Wait(100),
-        Hold(Key::S, 500), Wait(800),
+        MouseMove(0, 24000), Wait(50),
+        MouseMove(0, -13500), Wait(50),
 
         // 2
-        Tap(Key::Num2), Wait(700),
-        MouseMove(0, 24000), Wait(50),
-        MouseMove(0, -17000), Wait(50),
+
+        Tap(Key::Num2),
+        MousePress(Button::Right),
+        Wait(1500),
         MouseHold(Button::Left, 400),
-        */
+        MouseRelease(Button::Right),
+        
         Tap(Key::W), Wait(100),
         Hold(Key::S, 500),
     ], true);
@@ -231,13 +223,22 @@ async fn main() {
     ], true);
     */
 
-    let mut key_rx = winky::listen();
+    let icarus = Macron::new(vec![
+        Press(Key::Space),
+        Wait(32),
+        Press(Key::N),
+        Wait(20),
+        Release(Key::N),
+        Release(Key::Space),
+    ], false);
+
+    let mut winky_rx = winky::listen();
     loop {
-        let (code, down) = key_rx.recv().await.unwrap();
-        match code {
-            Key::F9 if down => primary.toggle(),
-            Key::F10 if down => afk2.toggle(),
-            Key::F11 if down => afk3.toggle(),
+        match winky_rx.recv().await.unwrap() {
+            Event::Keyboard(Key::F9, true) => primary.toggle(),
+            Event::Keyboard(Key::F10, true) => afk2.toggle(),
+            Event::Keyboard(Key::F11, true) => afk3.toggle(),
+            Event::MouseButton(Button::X1, true) => icarus.start(),
             _ => {}
         }
     }
